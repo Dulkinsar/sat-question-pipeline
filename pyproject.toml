@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "satgen"
+version = "0.2.0"
+description = "Multi-model pipeline that generates and verifies Digital SAT questions"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+live = ["google-genai>=1.0", "anthropic>=0.40"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+satgen = "satgen.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# hand-written question data reads best one item per line
+"scripts/build_eval_set.py" = ["E501"]
+"src/satgen/llm.py" = ["E501"]

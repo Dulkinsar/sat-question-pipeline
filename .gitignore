@@ -1,0 +1,7 @@
+__pycache__/
+*.egg-info/
+.venv/
+.env
+out/
+.pytest_cache/
+eval/results/simulated*

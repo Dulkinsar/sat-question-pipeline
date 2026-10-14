@@ -1,0 +1,94 @@
+{
+  "models": {
+    "generator": "simulated-generator",
+    "solver": "simulated-generator",
+    "reviewer": "simulated-reviewer"
+  },
+  "config": {
+    "runs": 5,
+    "threshold": 3,
+    "salvage": true,
+    "recheck_runs": 3,
+    "recheck_needed": 2,
+    "concurrency": 8,
+    "seed": 0,
+    "max_retries": 4,
+    "base_delay": 1.0,
+    "duplicate_jaccard": 0.8,
+    "flag_jaccard": 0.5
+  },
+  "stats": {
+    "attempted": 36,
+    "status_counts": {
+      "accepted": 22,
+      "duplicate": 11,
+      "rejected": 2,
+      "screened_out": 1
+    },
+    "passed_gate": 33,
+    "gate_pass_rate": 0.917,
+    "agreement_histogram": {
+      "0/5": 2,
+      "1/5": 0,
+      "2/5": 1,
+      "3/5": 13,
+      "4/5": 10,
+      "5/5": 10
+    },
+    "reviewed": 35,
+    "salvaged_for_review": 2,
+    "key_corrections_proposed": 2,
+    "key_corrections_confirmed": 1,
+    "accepted": 22,
+    "acceptance_rate": 0.611,
+    "answer_position_distribution": {
+      "A": 4,
+      "C": 4,
+      "D": 2
+    },
+    "per_type": {
+      "words_in_context": {
+        "attempted": 24,
+        "accepted": 10
+      },
+      "spr_linear_equations": {
+        "attempted": 12,
+        "accepted": 12
+      }
+    }
+  },
+  "cost": {
+    "per_model": {
+      "simulated-generator": {
+        "calls": 216,
+        "tokens_in": 18384,
+        "tokens_out": 4860,
+        "usd": 0.0
+      },
+      "simulated-reviewer": {
+        "calls": 41,
+        "tokens_in": 4635,
+        "tokens_out": 2118,
+        "usd": 0.0
+      }
+    },
+    "per_stage_usd": {
+      "generate": 0.0,
+      "recheck": 0.0,
+      "review": 0.0,
+      "solve": 0.0
+    },
+    "total_usd": 0.0,
+    "accepted": 22,
+    "usd_per_accepted": 0.0,
+    "unpriced_models": [
+      "simulated-generator",
+      "simulated-reviewer"
+    ]
+  },
+  "manual_review": {
+    "needs_human": [],
+    "similar_pairs": []
+  },
+  "errors": []
+}

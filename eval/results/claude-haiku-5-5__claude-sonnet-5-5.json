@@ -1,0 +1,198 @@
+{
+  "items": 234,
+  "labels": {
+    "good": 83,
+    "bad_key": 83,
+    "ambiguous": 68
+  },
+  "solver_accuracy_on_good": 0.986,
+  "reviewer": {
+    "accepted_good": 1.0,
+    "rejected_ambiguous": 1.0,
+    "corrections_proposed": 85,
+    "corrections_right": 83
+  },
+  "configurations": [
+    {
+      "mode": "review_only",
+      "k": null,
+      "shipped": 86,
+      "error_rate_shipped": 0.0,
+      "good_yield": 1.0,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.312,
+      "usd_per_correct_shipped": 0.01526
+    },
+    {
+      "mode": "gate_only",
+      "k": 1,
+      "shipped": 146,
+      "error_rate_shipped": 0.438,
+      "good_yield": 0.988,
+      "bad_key_caught": 0.988,
+      "ambiguous_caught": 0.074,
+      "usd": 0.0586,
+      "usd_per_correct_shipped": 0.00072
+    },
+    {
+      "mode": "gate_only",
+      "k": 2,
+      "shipped": 142,
+      "error_rate_shipped": 0.423,
+      "good_yield": 0.988,
+      "bad_key_caught": 0.988,
+      "ambiguous_caught": 0.132,
+      "usd": 0.0586,
+      "usd_per_correct_shipped": 0.00072
+    },
+    {
+      "mode": "gate_only",
+      "k": 3,
+      "shipped": 138,
+      "error_rate_shipped": 0.406,
+      "good_yield": 0.988,
+      "bad_key_caught": 0.988,
+      "ambiguous_caught": 0.191,
+      "usd": 0.0586,
+      "usd_per_correct_shipped": 0.00072
+    },
+    {
+      "mode": "gate_only",
+      "k": 4,
+      "shipped": 135,
+      "error_rate_shipped": 0.393,
+      "good_yield": 0.988,
+      "bad_key_caught": 0.988,
+      "ambiguous_caught": 0.235,
+      "usd": 0.0586,
+      "usd_per_correct_shipped": 0.00072
+    },
+    {
+      "mode": "gate_only",
+      "k": 5,
+      "shipped": 129,
+      "error_rate_shipped": 0.372,
+      "good_yield": 0.976,
+      "bad_key_caught": 0.988,
+      "ambiguous_caught": 0.309,
+      "usd": 0.0586,
+      "usd_per_correct_shipped": 0.00072
+    },
+    {
+      "mode": "gate+review",
+      "k": 1,
+      "shipped": 82,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 0.8602,
+      "usd_per_correct_shipped": 0.01049
+    },
+    {
+      "mode": "gate+review",
+      "k": 2,
+      "shipped": 82,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 0.8287,
+      "usd_per_correct_shipped": 0.01011
+    },
+    {
+      "mode": "gate+review",
+      "k": 3,
+      "shipped": 82,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 0.8027,
+      "usd_per_correct_shipped": 0.00979
+    },
+    {
+      "mode": "gate+review",
+      "k": 4,
+      "shipped": 82,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 0.7839,
+      "usd_per_correct_shipped": 0.00956
+    },
+    {
+      "mode": "gate+review",
+      "k": 5,
+      "shipped": 81,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.976,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 0.7487,
+      "usd_per_correct_shipped": 0.00924
+    },
+    {
+      "mode": "full",
+      "k": 1,
+      "shipped": 85,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.312,
+      "usd_per_correct_shipped": 0.01543
+    },
+    {
+      "mode": "full",
+      "k": 2,
+      "shipped": 85,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.312,
+      "usd_per_correct_shipped": 0.01543
+    },
+    {
+      "mode": "full",
+      "k": 3,
+      "shipped": 85,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.312,
+      "usd_per_correct_shipped": 0.01543
+    },
+    {
+      "mode": "full",
+      "k": 4,
+      "shipped": 85,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.988,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.2582,
+      "usd_per_correct_shipped": 0.0148
+    },
+    {
+      "mode": "full",
+      "k": 5,
+      "shipped": 84,
+      "error_rate_shipped": 0.0,
+      "good_yield": 0.976,
+      "bad_key_caught": 1.0,
+      "ambiguous_caught": 1.0,
+      "usd": 1.2005,
+      "usd_per_correct_shipped": 0.01429
+    }
+  ],
+  "models": {
+    "solver": "claude-haiku-5-5",
+    "reviewer": "claude-sonnet-5-5"
+  },
+  "simulated": false
+}
