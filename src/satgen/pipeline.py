@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
@@ -51,19 +52,23 @@ REVIEW_SYSTEM = (
     "answer, that the key is right, and that the wording is unambiguous. Be strict: reject "
     "anything a careful student could reasonably argue about."
 )
+# The verdict is split into separate judgements. With a single "accepted" flag, reviewers
+# reject a wrong-keyed question outright even while naming the right answer, which
+# stops salvage from ever reaching the blind re-check.
 REVIEW_PROMPT = """Review this question.
 
 {question}
 
 Answer key: {answer}
-Solver votes ({runs} independent runs): {votes}
-{note}
+{votes}
+Solve it yourself first, then judge the key and the wording separately.
 Return JSON with keys:
-  accepted (true/false)
-  corrected_answer (the right answer if the key is wrong, else null)
-  corrected_explanation (required when corrected_answer is set, else null)
+  solved_answer (the answer you reach)
+  key_correct (true/false: does the key match the one correct answer?)
+  unambiguous (true/false: exactly one defensible answer and clear wording, judged as if the key were fixed)
+  explanation (a full explanation of the right answer when key_correct is false, else null)
   notes (string)"""
-SALVAGE_NOTE = "Note: most solver runs disagree with the key. Check whether the key is wrong.\n"
+VOTES_LINE = "Solver votes ({runs} independent runs): {votes}\n"
 
 
 def parse_json(text: str) -> dict:
@@ -96,6 +101,7 @@ class RunResult:
     records: list[Record]
     flagged: list[tuple[Record, str, float]]
     tracker: CostTracker
+    processed: set[int] = field(default_factory=set)  # indices worked on in this session (the tracker's spend)
 
 
 @dataclass
@@ -161,30 +167,31 @@ class Pipeline:
             votes.append(vote)
         return votes
 
-    def review(self, q: Question, votes: list[str], salvage: bool) -> Verdict:
+    def review(self, q: Question, votes: Optional[list[str]], stage: str = "review") -> Verdict:
+        """Ask the reviewer for a verdict. votes=None hides the solver votes (a blind review)."""
         prompt = REVIEW_PROMPT.format(
             question=q.to_prompt(),
             answer=q.answer,
-            runs=len(votes),
-            votes=", ".join(votes),
-            note=SALVAGE_NOTE if salvage else "",
+            votes=VOTES_LINE.format(runs=len(votes), votes=", ".join(votes)) if votes is not None else "",
         )
-        data = parse_json(self._call(self.reviewer, "review", prompt, system=REVIEW_SYSTEM, temperature=0.0))
-        fixed = data.get("corrected_answer")
-        if is_nullish(fixed):
-            fixed = None  # "", "null", "N/A" all mean "no correction"
-        if fixed is not None and not isinstance(fixed, (str, int, float)):
-            raise ValueError(f"corrected_answer has unexpected type {type(fixed).__name__}")
-        if fixed is not None:
-            fixed = normalize_spr(str(fixed)) if q.format == SPR else (parse_letter(str(fixed)) or "?")
-            if fixed == "?":
-                raise ValueError("corrected_answer is not a valid answer")
-        explanation = data.get("corrected_explanation")
+        data = parse_json(self._call(self.reviewer, stage, prompt, system=REVIEW_SYSTEM, temperature=0.0))
+        solved = data.get("solved_answer")
+        if is_nullish(solved) or not isinstance(solved, (str, int, float)):
+            raise ValueError("solved_answer is missing")
+        solved = normalize_spr(str(solved)) if q.format == SPR else (parse_letter(str(solved)) or "?")
+        if solved == "?":
+            raise ValueError("solved_answer is not a valid answer")
+        key_correct = parse_bool(data.get("key_correct"))
+        if key_correct and solved != q.answer:
+            key_correct = False  # trust the worked answer over the flag
+        explanation = data.get("explanation")
         return Verdict(
-            accepted=parse_bool(data.get("accepted")),
-            corrected_answer=fixed,
-            corrected_explanation=str(explanation) if explanation else None,
+            accepted=parse_bool(data.get("unambiguous")),
+            corrected_answer=None if key_correct else solved,
+            corrected_explanation=str(explanation) if explanation and not key_correct else None,
             notes=str(data.get("notes") or ""),
+            solved_answer=solved,
+            key_correct=key_correct,
         )
 
     def process(self, index: int, qtype: str) -> Record:
@@ -210,7 +217,7 @@ class Pipeline:
                     return rec
 
             try:
-                rec.verdict = self.review(q, rec.solve_votes, salvage)
+                rec.verdict = self.review(q, rec.solve_votes)
             except (ValueError, json.JSONDecodeError) as exc:
                 rec.status, rec.error = "rejected", f"review: {exc}"
                 return rec
@@ -282,18 +289,21 @@ class Pipeline:
 
         records = [done[i] for i in sorted(done) if i < count]
         flagged = self.dedupe(records, bank)
-        return RunResult(records, flagged, self.tracker)
+        return RunResult(records, flagged, self.tracker, set(todo))
 
     def fingerprint(self, qtypes: list[str]) -> dict:
         """Everything that must match for a checkpoint to be resumed safely."""
         c = self.config
+        prompts = "\n".join([GEN_SYSTEM, GEN_PROMPT, SOLVE_MCQ, SOLVE_SPR, REVIEW_SYSTEM, REVIEW_PROMPT, self.context])
         return {
             "models": [self.generator.model, self.solver.model, self.reviewer.model],
             "types": qtypes,
             "runs": c.runs,
             "threshold": c.threshold,
             "salvage": c.salvage,
+            "recheck": [c.recheck_runs, c.recheck_needed],
             "seed": c.seed,
+            "prompts_sha256": hashlib.sha256(prompts.encode()).hexdigest()[:16],
         }
 
     def dedupe(self, records: list[Record], bank: Iterable[Question] = ()) -> list[tuple[Record, str, float]]:

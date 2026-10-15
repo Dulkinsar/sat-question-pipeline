@@ -83,16 +83,21 @@ def _to_fraction(token: str) -> Optional[Fraction]:
         return None
 
 
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")  # 1,250 -> 1250
+
+
 def parse_number(text: str) -> Optional[Fraction]:
     """Parse an SPR answer ("3/4", "0.75", "−2", "x = 9/2", "\\frac{3}{4}") into an exact fraction."""
-    text = _clean(text).replace(",", "")
+    text = _THOUSANDS.sub("", _clean(text))
     if not text:
         return None
     from_json = _json_answer(text)
     if from_json is not None:
-        text = _clean(from_json).replace(",", "")
+        text = _THOUSANDS.sub("", _clean(from_json))
     text = _LATEX_FRAC.sub(r"\1/\2", text).replace("$", "")
     line = _first_line(text)
+    if re.fullmatch(r"-?\d+,\d+", line.strip()):  # a lone decimal comma: 2,5 means 2.5
+        line = line.replace(",", ".")
     whole = _to_fraction(line)
     if whole is not None:
         return whole
@@ -122,9 +127,11 @@ def normalize_spr(text: str) -> str:
     value = parse_number(text)
     if value is None:
         return "?"
-    decimal = re.search(r"-?\d*\.\d+", _clean(text))
-    if decimal:
-        value = snap_decimal(value, decimal.group(0))
+    # Snap only the decimal that is the parsed answer, not some other number in the reply.
+    for decimal in re.findall(r"-?\d*\.\d+", _THOUSANDS.sub("", _clean(text))):
+        if Fraction(decimal) == value:
+            value = snap_decimal(value, decimal)
+            break
     return str(value.numerator) if value.denominator == 1 else f"{value.numerator}/{value.denominator}"
 
 

@@ -128,7 +128,10 @@ def _run(args) -> int:
         "models": {"generator": gen.model, "solver": solver.model, "reviewer": reviewer.model},
         "config": config.__dict__,
         "stats": pipeline.stats(result.records, runs=args.runs),
-        "cost": result.tracker.summary(accepted=n),
+        # Spend covers this session only, so divide by questions accepted in this session.
+        "cost": result.tracker.summary(
+            accepted=sum(r.status == "accepted" and r.index in result.processed for r in result.records)
+        ),
         "manual_review": {
             "needs_human": [
                 {
@@ -172,6 +175,7 @@ def _rescore(args) -> int:
     rep["models"] = {"solver": solver, "reviewer": reviewer}
     rep["simulated"] = False
     stem = args.rescore.name.removesuffix(".items.jsonl")
+    args.out.mkdir(parents=True, exist_ok=True)
     (args.out / f"{stem}.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
     md = evaluate.to_markdown(rep)
     (args.out / f"{stem}.md").write_text(md, encoding="utf-8")

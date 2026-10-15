@@ -49,9 +49,21 @@ def test_gate_blocks_low_agreement_without_review():
     assert reviewer.prompts == []
 
 
+def review(solved, key_correct=True, unambiguous=True, explanation=None):
+    return json.dumps(
+        {
+            "solved_answer": solved,
+            "key_correct": key_correct,
+            "unambiguous": unambiguous,
+            "explanation": explanation,
+            "notes": "",
+        }
+    )
+
+
 def test_gate_pass_then_review_accepts():
     gen = Scripted([gen_json("A"), "A", "A", "A", "B", "A"])
-    reviewer = Scripted(['{"accepted": true, "corrected_answer": null, "notes": "ok"}'])
+    reviewer = Scripted([review("A")])
     rec = unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0]
     assert (rec.status, rec.agreement, rec.question.answer) == ("accepted", 4, "A")
 
@@ -61,7 +73,7 @@ def test_correction_applied_only_after_blind_recheck_confirms():
     gen = Scripted([gen_json("A"), "C", "C", "C", "C", "A"])
     reviewer = Scripted(
         [
-            '{"accepted": true, "corrected_answer": "C", "corrected_explanation": "C is right", "notes": "key wrong"}',
+            review("C", key_correct=False, explanation="C is right"),
             "C",
             "C",
             "B",  # blind re-solve by the review model: 2 of 3 confirm
@@ -78,7 +90,7 @@ def test_correction_that_fails_recheck_goes_to_a_human():
     gen = Scripted([gen_json("A"), "A", "A", "A", "A", "A"])
     reviewer = Scripted(
         [
-            '{"accepted": true, "corrected_answer": "D", "corrected_explanation": "D", "notes": ""}',
+            review("D", key_correct=False, explanation="D"),
             "A",
             "A",
             "D",
@@ -87,6 +99,29 @@ def test_correction_that_fails_recheck_goes_to_a_human():
     rec = unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0]
     assert rec.status == "needs_human"
     assert rec.question.answer == "A"  # never shipped with the unconfirmed key
+
+
+def test_wrong_key_with_clear_wording_reaches_the_recheck():
+    """The split verdict: a wrong key is a correction, never a rejection on its own."""
+    gen = Scripted([gen_json("A"), "B", "B", "B", "A", "B"])
+    reviewer = Scripted([review("B", key_correct=False, unambiguous=True, explanation="B fits"), "B", "B", "B"])
+    rec = unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0]
+    assert rec.verdict.accepted and rec.verdict.corrected_answer == "B"
+    assert (rec.status, rec.question.answer, len(rec.recheck_votes)) == ("accepted", "B", 3)
+
+
+def test_key_flag_is_overruled_by_the_reviewers_own_answer():
+    gen = Scripted([gen_json("A"), "A", "A", "A", "A", "A"])
+    reviewer = Scripted([review("C", key_correct=True, explanation=None)])
+    rec = unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0]
+    assert rec.verdict.key_correct is False and rec.verdict.corrected_answer == "C"
+    assert rec.status == "needs_human"  # a correction without an explanation is not shipped
+
+
+def test_ambiguous_wording_is_rejected_whatever_the_key():
+    gen = Scripted([gen_json("A"), "A", "A", "A", "A", "A"])
+    reviewer = Scripted([review("A", unambiguous=False)])
+    assert unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0].status == "rejected"
 
 
 def test_retry_recovers_from_transient_failures():
@@ -108,6 +143,7 @@ def test_resume_skips_finished_questions(tmp_path):
     )
     assert sum(sim._seen.values()) == calls_before  # nothing was regenerated
     assert [r.status for r in first.records] == [r.status for r in second.records]
+    assert second.processed == set() and second.tracker.total() == 0
 
 
 def test_shuffle_moves_the_key_with_its_text():
@@ -132,7 +168,7 @@ def test_spr_questions_compare_votes_numerically():
             "2",
         ]
     )
-    reviewer = Scripted(['{"accepted": true, "corrected_answer": null, "notes": ""}'])
+    reviewer = Scripted([review("1.5")])
     rec = make(gen, reviewer=reviewer).run(["spr_x"], 1).records[0]
     assert rec.question.format == "spr" and rec.question.answer == "3/2"
     assert rec.agreement == 4 and rec.status == "accepted"
@@ -202,3 +238,5 @@ def test_checkpoint_from_a_different_run_is_refused(tmp_path):
     Pipeline(sim, sim, SimulatedClient("rev")).run(["words_in_context"], 3, checkpoint=ck)
     with pytest.raises(pipeline.CheckpointMismatch):
         Pipeline(sim, sim, SimulatedClient("rev")).run(["spr_linear_equations"], 3, checkpoint=ck)
+    with pytest.raises(pipeline.CheckpointMismatch):  # same types, different style context
+        Pipeline(sim, sim, SimulatedClient("rev"), context="new style").run(["words_in_context"], 3, checkpoint=ck)

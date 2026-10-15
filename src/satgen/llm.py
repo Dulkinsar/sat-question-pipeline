@@ -94,15 +94,26 @@ class ClaudeClient:
         self._client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=TIMEOUT_S, max_retries=0)
 
     def complete(self, prompt, system="", temperature=0.0, json_mode=False):
-        # Current Claude models think adaptively, so temperature is left at the default.
+        if json_mode:
+            system = (system + "\n\n" if system else "") + "Reply with a single JSON object and nothing else."
+        kw = {} if _fixed_sampling(self.model) else {"temperature": temperature}
         msg = self._client.messages.create(
             model=self.model,
             max_tokens=4096,
             system=system,
             messages=[{"role": "user", "content": prompt}],
+            **kw,
         )
         text = "".join(b.text for b in msg.content if b.type == "text")
         return text, msg.usage.input_tokens, msg.usage.output_tokens
+
+
+def _fixed_sampling(model: str) -> bool:
+    """Claude 5-family models reject non-default temperature/top_p with a 400, so leave them unset.
+
+    Solver diversity on those models comes only from independent calls.
+    """
+    return re.match(r"claude-(opus|sonnet|haiku)-5", model) is not None
 
 
 def make_client(model: str) -> LLM:
@@ -219,7 +230,7 @@ class SimulatedClient:
         rng = _stable_rng(self.model, prompt, self._nth(prompt))
         if "Return JSON with keys: qtype" in prompt:
             return self._generate(prompt), t_in, 120
-        if "Return JSON with keys:\n  accepted" in prompt:
+        if "Return JSON with keys:\n  solved_answer" in prompt:
             return self._review(prompt, rng), t_in, 60
         return self._solve(prompt, rng), t_in, 3
 
@@ -280,22 +291,15 @@ class SimulatedClient:
     def _review(self, prompt: str, rng: random.Random) -> str:
         truth, choices = self._truth(prompt)
         key = re.search(r"Answer key: (\S+)", prompt).group(1)
+        verdict = {"solved_answer": truth, "key_correct": key == truth, "unambiguous": True, "explanation": None}
         if key != truth:
             shown = choices.get(truth, truth)
-            return json.dumps(
-                {
-                    "accepted": True,
-                    "corrected_answer": truth,
-                    "corrected_explanation": f'The correct answer is {truth} ("{shown}").'
-                    if choices
-                    else f"Solving the equation gives x = {truth}.",
-                    "notes": "answer key was wrong",
-                }
+            verdict["explanation"] = (
+                f'The correct answer is {truth} ("{shown}").' if choices else f"Solving the equation gives x = {truth}."
             )
-        if rng.random() < 0.05:
-            return json.dumps({"accepted": False, "corrected_answer": None, "notes": "wording is ambiguous"})
-        return json.dumps({"accepted": True, "corrected_answer": None, "notes": "ok"})
-
-
-# Backwards-compatible name used in earlier versions of the README.
-OfflineDemoClient = SimulatedClient
+            verdict["notes"] = "answer key was wrong"
+        elif rng.random() < 0.05:
+            verdict.update(unambiguous=False, notes="wording is ambiguous")
+        else:
+            verdict["notes"] = "ok"
+        return json.dumps(verdict)

@@ -75,6 +75,8 @@ class Verdict:
     corrected_answer: Optional[str] = None
     corrected_explanation: Optional[str] = None
     notes: str = ""
+    solved_answer: Optional[str] = None  # what the reviewer got when solving it
+    key_correct: Optional[bool] = None
 
 
 # Terminal states a record can end in. Only "accepted" is exported.

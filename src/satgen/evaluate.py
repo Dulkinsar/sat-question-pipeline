@@ -1,5 +1,7 @@
 """Scores the gate and the reviewer on the labelled set. Each item is solved N times and
-reviewed once, so every threshold and configuration comes from the same calls.
+reviewed twice: once with the solver votes in the prompt (as the pipeline does) and once
+blind, with only the question and key. Every threshold and configuration is scored from
+those same calls.
 """
 
 from __future__ import annotations
@@ -27,11 +29,27 @@ class ItemResult:
     verdict: Optional[dict]
     recheck: list[str] = field(default_factory=list)
     cost: dict[str, float] = field(default_factory=dict)
+    blind_verdict: Optional[dict] = None
+    blind_recheck: list[str] = field(default_factory=list)
+
+    @property
+    def base(self) -> str:
+        return self.id.rsplit("-", 1)[0]
 
 
 def load_results(path: Path) -> list[ItemResult]:
     """Read back a saved <models>.items.jsonl so it can be scored again without new API calls."""
-    return [ItemResult(**json.loads(line)) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    results = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            cost = row.get("cost", {})
+            if "recheck" in cost:  # files written before the blind arm existed
+                cost["recheck_review"] = cost.pop("recheck")
+            for stage in ("blind", "recheck_blind"):
+                cost.setdefault(stage, 0.0)
+            results.append(ItemResult(**row))
+    return results
 
 
 def load_items(path: Path) -> list[dict]:
@@ -45,28 +63,42 @@ def run_items(items: list[dict], solver: LLM, reviewer: LLM, config: Config) -> 
         if q.format == SPR:
             q.answer = normalize_spr(q.answer)
         votes = p.solve(solver, q, config.runs, "solve")
-        agreement = sum(v == q.answer for v in votes)
-        top, n = _top_vote(votes)
-        salvage = agreement < config.threshold and top is not None and n >= config.threshold
-        verdict, recheck = None, []
-        try:
-            v = p.review(q, votes, salvage)
-            verdict = v.__dict__
+
+        def reviewed(shown: Optional[list[str]], stage: str) -> tuple[Optional[dict], list[str]]:
+            try:
+                v = p.review(q, shown, stage=stage)
+            except ValueError:
+                return None, []  # an unparseable review counts as a rejection
+            recheck = []
             if v.accepted and v.corrected_answer not in (None, q.answer) and v.corrected_explanation:
                 candidate = Question(**{**q.__dict__, "answer": v.corrected_answer})
-                recheck = p.solve(reviewer, candidate, config.recheck_runs, "recheck")
-        except ValueError:
-            pass  # an unparseable review counts as a rejection
-        cost = {s: p.tracker.stage_cost(s) for s in ("solve", "review", "recheck")}
-        return ItemResult(item["id"], item["label"], item.get("true_answer"), q.answer, votes, verdict, recheck, cost)
+                recheck = p.solve(reviewer, candidate, config.recheck_runs, "recheck_" + stage)
+            return v.__dict__, recheck
+
+        verdict, recheck = reviewed(votes, "review")
+        blind, blind_recheck = reviewed(None, "blind")
+        stages = ("solve", "review", "recheck_review", "blind", "recheck_blind")
+        cost = {s: p.tracker.stage_cost(s) for s in stages}
+        return ItemResult(
+            item["id"],
+            item["label"],
+            item.get("true_answer"),
+            q.answer,
+            votes,
+            verdict,
+            recheck,
+            cost,
+            blind,
+            blind_recheck,
+        )
 
     with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as pool:
         return list(pool.map(one, items))
 
 
-def _review_decision(r: ItemResult, config: Config, salvaged: bool) -> tuple[bool, Optional[str]]:
+def _review_decision(r: ItemResult, config: Config, salvaged: bool, blind: bool = False) -> tuple[bool, Optional[str]]:
     """(ship?, final key) from the review stage alone."""
-    v = r.verdict
+    v, recheck = (r.blind_verdict, r.blind_recheck) if blind else (r.verdict, r.recheck)
     if v is None or not v["accepted"]:
         return False, None
     fixed = v["corrected_answer"]
@@ -74,7 +106,7 @@ def _review_decision(r: ItemResult, config: Config, salvaged: bool) -> tuple[boo
         return (not salvaged), r.key
     if not v["corrected_explanation"]:
         return False, None
-    confirmed = sum(x == fixed for x in r.recheck) >= config.recheck_needed
+    confirmed = sum(x == fixed for x in recheck) >= config.recheck_needed
     return confirmed, fixed if confirmed else None
 
 
@@ -82,20 +114,20 @@ def decide(r: ItemResult, mode: str, k: int, config: Config) -> tuple[bool, Opti
     """Return (shipped, final key, cost spent on this item) under one configuration."""
     agree = sum(v == r.key for v in r.votes)
     c = r.cost
+    reviewed = c["solve"] + c["review"] + c["recheck_review"]
     if mode == "gate_only":
         return agree >= k, r.key, c["solve"]
-    if mode == "review_only":
-        ship, key = _review_decision(r, config, salvaged=False)
-        # the reviewer is shown the solver votes, so the solves are part of its cost
-        return ship, key, c["solve"] + c["review"] + c["recheck"]
+    if mode == "review_only":  # blind review: no solver calls at all
+        ship, key = _review_decision(r, config, salvaged=False, blind=True)
+        return ship, key, c["blind"] + c["recheck_blind"]
     if agree >= k:
         ship, key = _review_decision(r, config, salvaged=False)
-        return ship, key, c["solve"] + c["review"] + c["recheck"]
+        return ship, key, reviewed
     if mode == "full":
         top, n = _top_vote(r.votes)
         if top is not None and n >= k:
             ship, key = _review_decision(r, config, salvaged=True)
-            return ship, key, c["solve"] + c["review"] + c["recheck"]
+            return ship, key, reviewed
     return False, None, c["solve"]
 
 
@@ -130,19 +162,46 @@ def report(results: list[ItemResult], config: Config) -> dict:
     rows = [score(results, "review_only", 0, config)]
     for mode in ("gate_only", "gate+review", "full"):
         rows += [score(results, mode, k, config) for k in range(1, config.runs + 1)]
-    proposed = [r for r in results if r.verdict and r.verdict["corrected_answer"] not in (None, r.key)]
     return {
         "items": len(results),
         "labels": dict(Counter(r.label for r in results)),
         "solver_accuracy_on_good": _solver_accuracy(results),
-        "reviewer": {
-            "accepted_good": _share(results, "good", lambda r: bool(r.verdict and r.verdict["accepted"])),
-            "rejected_ambiguous": _share(results, "ambiguous", lambda r: not (r.verdict and r.verdict["accepted"])),
-            "corrections_proposed": len(proposed),
-            "corrections_right": sum(r.verdict["corrected_answer"] == r.true_answer for r in proposed),
-        },
+        "reviewer_with_votes": _reviewer_stats(results, "verdict", "recheck", config),
+        "reviewer_blind": _reviewer_stats(results, "blind_verdict", "blind_recheck", config),
         "configurations": rows,
     }
+
+
+def _reviewer_stats(results: list[ItemResult], field_: str, recheck_field: str, config: Config) -> dict:
+    get = lambda r: getattr(r, field_)  # noqa: E731
+    proposed = [r for r in results if get(r) and get(r)["corrected_answer"] not in (None, r.key)]
+    rechecked = [r for r in proposed if getattr(r, recheck_field)]
+    return {
+        "accepted_good": _share(results, "good", lambda r: bool(get(r) and get(r)["accepted"])),
+        "rejected_ambiguous": _share(results, "ambiguous", lambda r: not (get(r) and get(r)["accepted"])),
+        "corrections_proposed": len(proposed),
+        "corrections_right": sum(get(r)["corrected_answer"] == r.true_answer for r in proposed),
+        "corrections_rechecked": len(rechecked),
+        "corrections_confirmed": sum(
+            sum(x == get(r)["corrected_answer"] for x in getattr(r, recheck_field)) >= config.recheck_needed
+            for r in rechecked
+        ),
+        "key_anchoring": _anchoring(results, get),
+    }
+
+
+def _anchoring(results: list[ItemResult], get) -> Optional[dict]:
+    """Same question, right key vs planted wrong key: how often does the wrong key alone flip
+    the reviewer's ambiguity judgement? The wording is identical, so it should never flip."""
+    pairs: dict[str, dict[str, ItemResult]] = {}
+    for r in results:
+        if r.label in ("good", "bad_key") and get(r) is not None:
+            pairs.setdefault(r.base, {})[r.label] = r
+    both = [p for p in pairs.values() if len(p) == 2]
+    if not both:
+        return None
+    flipped = sum(get(p["good"])["accepted"] and not get(p["bad_key"])["accepted"] for p in both)
+    return {"pairs": len(both), "called_ambiguous_only_with_wrong_key": flipped, "rate": round(flipped / len(both), 3)}
 
 
 def _share(results, label, pred) -> Optional[float]:
@@ -159,7 +218,8 @@ def to_markdown(rep: dict) -> str:
     lines = [
         f"Items: {rep['items']} {rep['labels']}  ",
         f"Solver accuracy on good items: {rep['solver_accuracy_on_good']}  ",
-        f"Reviewer: {rep['reviewer']}",
+        f"Reviewer, shown solver votes: {rep.get('reviewer_with_votes', rep.get('reviewer'))}  ",
+        f"Reviewer, blind: {rep.get('reviewer_blind')}",
         "",
         "| " + " | ".join(head for head, _ in _COLUMNS) + " |",
         "|" + "---|" * len(_COLUMNS),
@@ -207,23 +267,14 @@ class OracleSimClient:
         with self._lock:
             roll, pick = self._rng.random(), self._rng.random()
         truth = it["true_answer"] or it["question"]["answer"]
-        if "Return JSON with keys:\n  accepted" in prompt:
+        if "Return JSON with keys:\n  solved_answer" in prompt:
             key = prompt.split("Answer key: ")[1].split("\n")[0].strip()
+            verdict = {"solved_answer": truth, "key_correct": key == truth, "unambiguous": True, "explanation": None}
             if it["label"] == "ambiguous" and roll < 0.7:
-                return (
-                    json.dumps({"accepted": False, "corrected_answer": None, "notes": "two defensible answers"}),
-                    500,
-                    60,
-                )
-            if key != truth:
-                return (
-                    json.dumps(
-                        {"accepted": True, "corrected_answer": truth, "corrected_explanation": "fixed", "notes": "key"}
-                    ),
-                    500,
-                    60,
-                )
-            return json.dumps({"accepted": True, "corrected_answer": None, "notes": "ok"}), 500, 60
+                verdict.update(unambiguous=False, notes="two defensible answers")
+            elif key != truth:
+                verdict.update(explanation="fixed", notes="key")
+            return json.dumps(verdict), 500, 60
         if roll < self._acc:
             return truth, 300, 2
         others = [k for k in "ABCD" if k != truth] if it["question"]["format"] == "mcq" else ["0"]
