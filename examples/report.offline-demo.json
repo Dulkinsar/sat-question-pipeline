@@ -10,6 +10,7 @@
     "salvage": true,
     "recheck_runs": 3,
     "recheck_needed": 2,
+    "review_mode": "keyless",
     "concurrency": 8,
     "seed": 0,
     "max_retries": 4,
@@ -66,7 +67,7 @@
       },
       "simulated-reviewer": {
         "calls": 41,
-        "tokens_in": 6480,
+        "tokens_in": 4450,
         "tokens_out": 2118,
         "usd": 0.0
       }
