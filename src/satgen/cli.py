@@ -64,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     r.add_argument("--fresh", action="store_true", help="ignore and replace an existing checkpoint")
     r.add_argument("--no-salvage", action="store_true", help="discard every question that fails the gate")
+    r.add_argument(
+        "--review-mode",
+        choices=["keyless", "key"],
+        default="keyless",
+        help="key: reviewer sees the key and solver votes; keyless: it sees neither and its answer is compared in code",
+    )
     r.add_argument("--seed", type=int, default=0, help="seed for choice shuffling")
     r.add_argument("--out", type=Path, default=Path("out/questions.json"))
     r.add_argument("--report", type=Path, default=Path("out/report.json"))
@@ -113,6 +119,7 @@ def _run(args) -> int:
         concurrency=args.concurrency,
         seed=args.seed,
         salvage=not args.no_salvage,
+        review_mode=args.review_mode,
     )
     bank = pipeline.load_bank(args.bank) if args.bank else []
     p = pipeline.Pipeline(gen, solver, reviewer, context=context, config=config)

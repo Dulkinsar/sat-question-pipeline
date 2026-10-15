@@ -1,7 +1,7 @@
 """Scores the gate and the reviewer on the labelled set. Each item is solved N times and
-reviewed twice: once with the solver votes in the prompt (as the pipeline does) and once
-blind, with only the question and key. Every threshold and configuration is scored from
-those same calls.
+reviewed three ways: shown the key and the solver votes, shown the key only ("blind"), and
+shown neither ("keyless", the reviewer's answer is compared with the key in code). Every
+threshold and configuration is scored from those same calls.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ class ItemResult:
     cost: dict[str, float] = field(default_factory=dict)
     blind_verdict: Optional[dict] = None
     blind_recheck: list[str] = field(default_factory=list)
+    keyless_verdict: Optional[dict] = None
+    keyless_recheck: list[str] = field(default_factory=list)
 
     @property
     def base(self) -> str:
@@ -46,7 +48,7 @@ def load_results(path: Path) -> list[ItemResult]:
             cost = row.get("cost", {})
             if "recheck" in cost:  # files written before the blind arm existed
                 cost["recheck_review"] = cost.pop("recheck")
-            for stage in ("blind", "recheck_blind"):
+            for stage in ("blind", "recheck_blind", "keyless", "recheck_keyless"):
                 cost.setdefault(stage, 0.0)
             results.append(ItemResult(**row))
     return results
@@ -64,9 +66,9 @@ def run_items(items: list[dict], solver: LLM, reviewer: LLM, config: Config) -> 
             q.answer = normalize_spr(q.answer)
         votes = p.solve(solver, q, config.runs, "solve")
 
-        def reviewed(shown: Optional[list[str]], stage: str) -> tuple[Optional[dict], list[str]]:
+        def reviewed(shown: Optional[list[str]], stage: str, key: bool = True) -> tuple[Optional[dict], list[str]]:
             try:
-                v = p.review(q, shown, stage=stage)
+                v = p.review(q, shown, stage=stage, show_key=key)
             except ValueError:
                 return None, []  # an unparseable review counts as a rejection
             recheck = []
@@ -77,7 +79,8 @@ def run_items(items: list[dict], solver: LLM, reviewer: LLM, config: Config) -> 
 
         verdict, recheck = reviewed(votes, "review")
         blind, blind_recheck = reviewed(None, "blind")
-        stages = ("solve", "review", "recheck_review", "blind", "recheck_blind")
+        keyless, keyless_recheck = reviewed(None, "keyless", key=False)
+        stages = ("solve", "review", "recheck_review", "blind", "recheck_blind", "keyless", "recheck_keyless")
         cost = {s: p.tracker.stage_cost(s) for s in stages}
         return ItemResult(
             item["id"],
@@ -90,15 +93,29 @@ def run_items(items: list[dict], solver: LLM, reviewer: LLM, config: Config) -> 
             cost,
             blind,
             blind_recheck,
+            keyless,
+            keyless_recheck,
         )
 
     with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as pool:
         return list(pool.map(one, items))
 
 
-def _review_decision(r: ItemResult, config: Config, salvaged: bool, blind: bool = False) -> tuple[bool, Optional[str]]:
+ARMS = {
+    "votes": ("verdict", "recheck"),
+    "blind": ("blind_verdict", "blind_recheck"),
+    "keyless": ("keyless_verdict", "keyless_recheck"),
+}
+STAGES = {
+    "votes": ("review", "recheck_review"),
+    "blind": ("blind", "recheck_blind"),
+    "keyless": ("keyless", "recheck_keyless"),
+}
+
+
+def _review_decision(r: ItemResult, config: Config, salvaged: bool, arm: str = "votes") -> tuple[bool, Optional[str]]:
     """(ship?, final key) from the review stage alone."""
-    v, recheck = (r.blind_verdict, r.blind_recheck) if blind else (r.verdict, r.recheck)
+    v, recheck = (getattr(r, f) for f in ARMS[arm])
     if v is None or not v["accepted"]:
         return False, None
     fixed = v["corrected_answer"]
@@ -111,22 +128,28 @@ def _review_decision(r: ItemResult, config: Config, salvaged: bool, blind: bool 
 
 
 def decide(r: ItemResult, mode: str, k: int, config: Config) -> tuple[bool, Optional[str], float]:
-    """Return (shipped, final key, cost spent on this item) under one configuration."""
+    """Return (shipped, final key, cost spent on this item) under one configuration.
+
+    Modes: gate_only; review_only and review_only_keyless (no solver calls); gate+review and
+    full (reviewer shown key and votes); gate+keyless and full_keyless (reviewer shown neither).
+    """
     agree = sum(v == r.key for v in r.votes)
     c = r.cost
-    reviewed = c["solve"] + c["review"] + c["recheck_review"]
     if mode == "gate_only":
         return agree >= k, r.key, c["solve"]
-    if mode == "review_only":  # blind review: no solver calls at all
-        ship, key = _review_decision(r, config, salvaged=False, blind=True)
-        return ship, key, c["blind"] + c["recheck_blind"]
+    if mode.startswith("review_only"):
+        arm = "keyless" if mode.endswith("keyless") else "blind"
+        ship, key = _review_decision(r, config, salvaged=False, arm=arm)
+        return ship, key, sum(c[s] for s in STAGES[arm])
+    arm = "keyless" if "keyless" in mode else "votes"
+    reviewed = c["solve"] + sum(c[s] for s in STAGES[arm])
     if agree >= k:
-        ship, key = _review_decision(r, config, salvaged=False)
+        ship, key = _review_decision(r, config, salvaged=False, arm=arm)
         return ship, key, reviewed
-    if mode == "full":
+    if mode.startswith("full"):
         top, n = _top_vote(r.votes)
         if top is not None and n >= k:
-            ship, key = _review_decision(r, config, salvaged=True)
+            ship, key = _review_decision(r, config, salvaged=True, arm=arm)
             return ship, key, reviewed
     return False, None, c["solve"]
 
@@ -147,7 +170,7 @@ def score(results: list[ItemResult], mode: str, k: int, config: Config) -> dict:
     ok = shipped - wrong
     return {
         "mode": mode,
-        "k": k if mode != "review_only" else None,
+        "k": k if not mode.startswith("review_only") else None,
         "shipped": shipped,
         "error_rate_shipped": round(wrong / shipped, 3) if shipped else None,
         "good_yield": round(good_ok / by_label["good"], 3) if by_label["good"] else None,
@@ -159,8 +182,8 @@ def score(results: list[ItemResult], mode: str, k: int, config: Config) -> dict:
 
 
 def report(results: list[ItemResult], config: Config) -> dict:
-    rows = [score(results, "review_only", 0, config)]
-    for mode in ("gate_only", "gate+review", "full"):
+    rows = [score(results, "review_only", 0, config), score(results, "review_only_keyless", 0, config)]
+    for mode in ("gate_only", "gate+review", "full", "gate+keyless", "full_keyless"):
         rows += [score(results, mode, k, config) for k in range(1, config.runs + 1)]
     return {
         "items": len(results),
@@ -168,13 +191,15 @@ def report(results: list[ItemResult], config: Config) -> dict:
         "solver_accuracy_on_good": _solver_accuracy(results),
         "reviewer_with_votes": _reviewer_stats(results, "verdict", "recheck", config),
         "reviewer_blind": _reviewer_stats(results, "blind_verdict", "blind_recheck", config),
+        "reviewer_keyless": _reviewer_stats(results, "keyless_verdict", "keyless_recheck", config),
         "configurations": rows,
     }
 
 
 def _reviewer_stats(results: list[ItemResult], field_: str, recheck_field: str, config: Config) -> dict:
     get = lambda r: getattr(r, field_)  # noqa: E731
-    proposed = [r for r in results if get(r) and get(r)["corrected_answer"] not in (None, r.key)]
+    # A correction counts when the verdict would act on it: wording judged clear, answer differs from the key.
+    proposed = [r for r in results if get(r) and get(r)["accepted"] and get(r)["corrected_answer"] not in (None, r.key)]
     rechecked = [r for r in proposed if getattr(r, recheck_field)]
     return {
         "accepted_good": _share(results, "good", lambda r: bool(get(r) and get(r)["accepted"])),
@@ -219,7 +244,8 @@ def to_markdown(rep: dict) -> str:
         f"Items: {rep['items']} {rep['labels']}  ",
         f"Solver accuracy on good items: {rep['solver_accuracy_on_good']}  ",
         f"Reviewer, shown solver votes: {rep.get('reviewer_with_votes', rep.get('reviewer'))}  ",
-        f"Reviewer, blind: {rep.get('reviewer_blind')}",
+        f"Reviewer, blind: {rep.get('reviewer_blind')}  ",
+        f"Reviewer, keyless: {rep.get('reviewer_keyless')}",
         "",
         "| " + " | ".join(head for head, _ in _COLUMNS) + " |",
         "|" + "---|" * len(_COLUMNS),
@@ -268,8 +294,8 @@ class OracleSimClient:
             roll, pick = self._rng.random(), self._rng.random()
         truth = it["true_answer"] or it["question"]["answer"]
         if "Return JSON with keys:\n  solved_answer" in prompt:
-            key = prompt.split("Answer key: ")[1].split("\n")[0].strip()
-            verdict = {"solved_answer": truth, "key_correct": key == truth, "unambiguous": True, "explanation": None}
+            key = prompt.split("Answer key: ")[1].split("\n")[0].strip() if "Answer key: " in prompt else truth
+            verdict = {"solved_answer": truth, "key_correct": key == truth, "unambiguous": True, "explanation": "fixed"}
             if it["label"] == "ambiguous" and roll < 0.7:
                 verdict.update(unambiguous=False, notes="two defensible answers")
             elif key != truth:

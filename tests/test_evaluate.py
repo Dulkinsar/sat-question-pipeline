@@ -7,7 +7,15 @@ from satgen.pipeline import Config
 ROOT = Path(__file__).resolve().parents[1]
 CFG = Config(concurrency=4)
 OK = {"accepted": True, "corrected_answer": None, "corrected_explanation": None, "notes": ""}
-COST = {"solve": 0.01, "review": 0.1, "recheck_review": 0.0, "blind": 0.1, "recheck_blind": 0.0}
+COST = {
+    "solve": 0.01,
+    "review": 0.1,
+    "recheck_review": 0.0,
+    "blind": 0.1,
+    "recheck_blind": 0.0,
+    "keyless": 0.1,
+    "recheck_keyless": 0.0,
+}
 
 
 def item(label, key, truth, votes, verdict=OK, recheck=(), blind=OK, blind_recheck=(), id_="x-good"):
@@ -50,3 +58,11 @@ def test_anchoring_counts_pairs_judged_ambiguous_only_under_the_wrong_key():
     bad = item("bad_key", "B", "A", "AAAAA", blind=rejected, id_="q1-badkey")
     stats = evaluate._anchoring([good, bad], lambda r: r.blind_verdict)
     assert stats == {"pairs": 1, "called_ambiguous_only_with_wrong_key": 1, "rate": 1.0}
+
+
+def test_keyless_full_mode_corrects_a_bad_key_its_reviewer_never_saw():
+    keyless = {**OK, "corrected_answer": "A", "corrected_explanation": "A is right", "key_correct": False}
+    r = item("bad_key", "B", "A", "AAAAB", verdict=None)
+    r.keyless_verdict, r.keyless_recheck = keyless, ["A", "A", "B"]
+    assert decide(r, "full_keyless", 3, CFG)[:2] == (True, "A")
+    assert decide(r, "gate+keyless", 3, CFG)[:2] == (False, None)

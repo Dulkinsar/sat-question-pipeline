@@ -290,8 +290,11 @@ class SimulatedClient:
 
     def _review(self, prompt: str, rng: random.Random) -> str:
         truth, choices = self._truth(prompt)
-        key = re.search(r"Answer key: (\S+)", prompt).group(1)
+        shown_key = re.search(r"Answer key: (\S+)", prompt)
+        key = shown_key.group(1) if shown_key else truth  # a key-hidden review never sees the key
         verdict = {"solved_answer": truth, "key_correct": key == truth, "unambiguous": True, "explanation": None}
+        if not shown_key:
+            verdict["explanation"] = f"The answer is {truth}."
         if key != truth:
             shown = choices.get(truth, truth)
             verdict["explanation"] = (

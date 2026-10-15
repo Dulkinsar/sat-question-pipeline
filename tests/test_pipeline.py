@@ -113,7 +113,10 @@ def test_wrong_key_with_clear_wording_reaches_the_recheck():
 def test_key_flag_is_overruled_by_the_reviewers_own_answer():
     gen = Scripted([gen_json("A"), "A", "A", "A", "A", "A"])
     reviewer = Scripted([review("C", key_correct=True, explanation=None)])
-    rec = unshuffled(make(gen, reviewer=reviewer)).run(["t"], 1).records[0]
+    p = unshuffled(make(gen, reviewer=reviewer))
+    p.config.review_mode = "key"
+    rec = p.run(["t"], 1).records[0]
+    assert "Answer key: A" in reviewer.prompts[0] and "Solver votes" in reviewer.prompts[0]
     assert rec.verdict.key_correct is False and rec.verdict.corrected_answer == "C"
     assert rec.status == "needs_human"  # a correction without an explanation is not shipped
 
@@ -240,3 +243,38 @@ def test_checkpoint_from_a_different_run_is_refused(tmp_path):
         Pipeline(sim, sim, SimulatedClient("rev")).run(["spr_linear_equations"], 3, checkpoint=ck)
     with pytest.raises(pipeline.CheckpointMismatch):  # same types, different style context
         Pipeline(sim, sim, SimulatedClient("rev"), context="new style").run(["words_in_context"], 3, checkpoint=ck)
+
+
+def test_keyless_review_hides_key_and_votes_and_compares_in_code():
+    gen = Scripted([gen_json("A"), "B", "B", "B", "A", "B"])
+    reviewer = Scripted(
+        [json.dumps({"solved_answer": "B", "unambiguous": True, "explanation": "B fits", "notes": ""}), "B", "B", "A"]
+    )
+    p = unshuffled(make(gen, reviewer=reviewer))
+    p.config.review_mode = "keyless"
+    rec = p.run(["t"], 1).records[0]
+    assert "Answer key" not in reviewer.prompts[0] and "Solver votes" not in reviewer.prompts[0]
+    assert rec.verdict.key_correct is False and (rec.status, rec.question.answer) == ("accepted", "B")
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("C", "C"),
+        ("8", "C"),  # named by value
+        ("C) 8", "C"),
+        ("D (concentrated), though C is nearly as defensible", None),
+        ("-7.75", "D"),
+        (None, None),
+    ],
+)
+def test_reviewer_answer_by_letter_value_or_gloss(raw, expected):
+    q = Question(qtype="t", stem="s", choices={"A": "25/2", "B": "64", "C": "8", "D": "-31/4"}, answer="C")
+    assert pipeline._reviewer_answer(q, raw) == expected
+
+
+def test_reviewer_naming_two_answers_is_a_rejection_not_an_error():
+    gen = Scripted([gen_json("A"), "A", "A", "A", "A", "A"])
+    hedge = {"solved_answer": "A, though B is defensible", "key_correct": True, "unambiguous": False, "notes": "two"}
+    rec = unshuffled(make(gen, reviewer=Scripted([json.dumps(hedge)]))).run(["t"], 1).records[0]
+    assert rec.status == "rejected" and rec.error == ""

@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -69,6 +70,17 @@ Return JSON with keys:
   explanation (a full explanation of the right answer when key_correct is false, else null)
   notes (string)"""
 VOTES_LINE = "Solver votes ({runs} independent runs): {votes}\n"
+# Key-hidden review: the reviewer never sees the key or the votes, so neither can anchor its
+# judgement of the wording; the code compares its answer with the key.
+REVIEW_KEYLESS_PROMPT = """Review this question. Solve it yourself, then judge the wording.
+
+{question}
+
+Return JSON with keys:
+  solved_answer (the answer you reach)
+  unambiguous (true/false: exactly one defensible answer and clear wording)
+  explanation (a full explanation of the correct answer)
+  notes (string)"""
 
 
 def parse_json(text: str) -> dict:
@@ -88,6 +100,7 @@ class Config:
     salvage: bool = True
     recheck_runs: int = 3
     recheck_needed: int = 2
+    review_mode: str = "keyless"  # "keyless": reviewer sees neither key nor votes; "key": it sees both
     concurrency: int = 8
     seed: int = 0
     max_retries: int = 4
@@ -167,26 +180,31 @@ class Pipeline:
             votes.append(vote)
         return votes
 
-    def review(self, q: Question, votes: Optional[list[str]], stage: str = "review") -> Verdict:
-        """Ask the reviewer for a verdict. votes=None hides the solver votes (a blind review)."""
-        prompt = REVIEW_PROMPT.format(
-            question=q.to_prompt(),
-            answer=q.answer,
-            votes=VOTES_LINE.format(runs=len(votes), votes=", ".join(votes)) if votes is not None else "",
-        )
+    def review(self, q: Question, votes: Optional[list[str]], stage: str = "review", show_key: bool = True) -> Verdict:
+        """Ask the reviewer for a verdict. votes=None hides the solver votes; show_key=False hides
+        the key as well, and the key check is done here by comparing answers."""
+        if show_key:
+            prompt = REVIEW_PROMPT.format(
+                question=q.to_prompt(),
+                answer=q.answer,
+                votes=VOTES_LINE.format(runs=len(votes), votes=", ".join(votes)) if votes is not None else "",
+            )
+        else:
+            prompt = REVIEW_KEYLESS_PROMPT.format(question=q.to_prompt())
         data = parse_json(self._call(self.reviewer, stage, prompt, system=REVIEW_SYSTEM, temperature=0.0))
-        solved = data.get("solved_answer")
-        if is_nullish(solved) or not isinstance(solved, (str, int, float)):
-            raise ValueError("solved_answer is missing")
-        solved = normalize_spr(str(solved)) if q.format == SPR else (parse_letter(str(solved)) or "?")
-        if solved == "?":
-            raise ValueError("solved_answer is not a valid answer")
-        key_correct = parse_bool(data.get("key_correct"))
+        unambiguous = parse_bool(data.get("unambiguous"))
+        solved = _reviewer_answer(q, data.get("solved_answer"))
+        if solved is None:
+            if unambiguous:
+                raise ValueError("solved_answer is not a valid answer")
+            # A reviewer that finds two defensible answers often names both; that is a rejection.
+            return Verdict(accepted=False, notes=str(data.get("notes") or ""))
+        key_correct = parse_bool(data.get("key_correct")) if show_key else solved == q.answer
         if key_correct and solved != q.answer:
             key_correct = False  # trust the worked answer over the flag
         explanation = data.get("explanation")
         return Verdict(
-            accepted=parse_bool(data.get("unambiguous")),
+            accepted=unambiguous,
             corrected_answer=None if key_correct else solved,
             corrected_explanation=str(explanation) if explanation and not key_correct else None,
             notes=str(data.get("notes") or ""),
@@ -217,7 +235,10 @@ class Pipeline:
                     return rec
 
             try:
-                rec.verdict = self.review(q, rec.solve_votes)
+                if self.config.review_mode == "keyless":
+                    rec.verdict = self.review(q, None, show_key=False)
+                else:
+                    rec.verdict = self.review(q, rec.solve_votes)
             except (ValueError, json.JSONDecodeError) as exc:
                 rec.status, rec.error = "rejected", f"review: {exc}"
                 return rec
@@ -294,7 +315,18 @@ class Pipeline:
     def fingerprint(self, qtypes: list[str]) -> dict:
         """Everything that must match for a checkpoint to be resumed safely."""
         c = self.config
-        prompts = "\n".join([GEN_SYSTEM, GEN_PROMPT, SOLVE_MCQ, SOLVE_SPR, REVIEW_SYSTEM, REVIEW_PROMPT, self.context])
+        prompts = "\n".join(
+            [
+                GEN_SYSTEM,
+                GEN_PROMPT,
+                SOLVE_MCQ,
+                SOLVE_SPR,
+                REVIEW_SYSTEM,
+                REVIEW_PROMPT,
+                REVIEW_KEYLESS_PROMPT,
+                self.context,
+            ]
+        )
         return {
             "models": [self.generator.model, self.solver.model, self.reviewer.model],
             "types": qtypes,
@@ -302,6 +334,7 @@ class Pipeline:
             "threshold": c.threshold,
             "salvage": c.salvage,
             "recheck": [c.recheck_runs, c.recheck_needed],
+            "review_mode": c.review_mode,
             "seed": c.seed,
             "prompts_sha256": hashlib.sha256(prompts.encode()).hexdigest()[:16],
         }
@@ -322,6 +355,32 @@ class Pipeline:
             flagged.extend((rec, key, round(s, 3)) for key, s in matches if s >= self.config.flag_jaccard)
             index.add(f"run:{rec.index}", rec.question.fingerprint())
         return flagged
+
+
+def _reviewer_answer(q: Question, raw: object) -> Optional[str]:
+    """The reviewer's own answer as a letter or canonical number, or None if it gives no single one.
+
+    Reviewers often name an MCQ answer by its value ("8") or with a gloss ("D (concentrated)").
+    """
+    if is_nullish(raw) or not isinstance(raw, (str, int, float)):
+        return None
+    text = str(raw).strip()
+    if q.format == SPR:
+        value = normalize_spr(text)
+        return None if value == "?" else value
+    letter = parse_letter(text)
+    if letter:
+        return letter
+    lead = re.match(r"^\(?([A-D])\)?(?:[\s.:,)]|$)", text)
+    if lead and not re.search(r"\b(or|though|but)\b", text, re.IGNORECASE):
+        return lead.group(1)
+    for k, choice in q.choices.items():
+        if text.lower() == choice.strip().lower():
+            return k
+        value = normalize_spr(text)
+        if value != "?" and value == normalize_spr(choice):
+            return k
+    return None
 
 
 def _top_vote(votes: list[str]) -> tuple[Optional[str], int]:
