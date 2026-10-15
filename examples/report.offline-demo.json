@@ -21,8 +21,7 @@
     "attempted": 36,
     "status_counts": {
       "accepted": 22,
-      "duplicate": 11,
-      "rejected": 2,
+      "duplicate": 13,
       "screened_out": 1
     },
     "passed_gate": 33,
@@ -67,7 +66,7 @@
       },
       "simulated-reviewer": {
         "calls": 41,
-        "tokens_in": 4635,
+        "tokens_in": 6480,
         "tokens_out": 2118,
         "usd": 0.0
       }

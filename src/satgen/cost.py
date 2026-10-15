@@ -11,7 +11,7 @@ PRICES: dict[str, tuple[float, float]] = {
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-flash": (0.30, 2.50),
     "claude-sonnet-5-5": (2.00, 10.00),
-    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-haiku-5-5": (0.10, 0.50),  # prompts under 100k tokens; see platform.claude.com/docs pricing
     "claude-haiku-4-5-20251001": (1.00, 5.00),
     # The original 2025 pipeline reviewed with Claude 3.7 Sonnet (retired February 2026).
     "claude-3-7-sonnet-latest": (3.00, 15.00),
